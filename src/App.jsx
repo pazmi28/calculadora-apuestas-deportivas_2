@@ -25,7 +25,7 @@ function getStyles(compact = false) {
   const cellPad = compact ? 8 : 12;
   const h1Size = compact ? "2rem" : "2.5rem";
   const cardRadius = compact ? 10 : 12;
-  const minCol = compact ? 300 : 380; // ancho mínimo de columna en tarjetas
+  const minCol = compact ? 300 : 380;
   const filterMin = compact ? 140 : 160;
 
   return {
@@ -192,6 +192,30 @@ function getStyles(compact = false) {
       background: "#744210",
       border: "1px solid #975a16",
     },
+    /* KPIs + badge Movimiento */
+    kpiBar: {
+      display: "grid",
+      gridTemplateColumns: "repeat(3, 1fr)",
+      gap: "10px",
+      marginBottom: 12,
+    },
+    kpiCard: {
+      background: "#1f2937",
+      border: "1px solid #374151",
+      borderRadius: "10px",
+      padding: "10px",
+    },
+    badgeMovimiento: {
+      display: "inline-block",
+      marginLeft: 8,
+      padding: "2px 6px",
+      fontSize: "0.75rem",
+      borderRadius: 8,
+      border: "1px solid #4b5563",
+      background: "#111827",
+      color: "#e5e7eb",
+    },
+
     profit: { color: "#68d391", fontWeight: "bold" },
     loss: { color: "#fc8181", fontWeight: "bold" },
     balanceContainer: {
@@ -318,34 +342,54 @@ const fmtFecha = (f) => {
   return f || "";
 };
 
+/* ======================= Movimiento (Opción B) ======================= */
+const isBanco = (name) =>
+  !!name && String(name).trim().toLowerCase() === "banco";
+
+/** Deriva el movimiento para docs antiguos (sin tipoMovimiento) */
+const computeMovimientoDerivado = (bet) => {
+  const estado = (bet?.estado || "").toUpperCase();
+  const cartera = bet?.cartera || "";
+  const aplicado = bet?.aplicado !== false; // true por defecto
+
+  if (estado === "G" || estado === "P") return "APUESTA";
+  if (estado === "I") {
+    if (isBanco(cartera) && aplicado) return "GASTO"; // cursos/comisiones
+    if (!isBanco(cartera) && !aplicado) return "RECARGA"; // espejo positivo actual
+    return "AJUSTE";
+  }
+  return "OTRO";
+};
+
+/** Movimiento “oficial”: usa tipoMovimiento si existe; si no, deriva */
+const movimientoOf = (bet) =>
+  bet?.tipoMovimiento || computeMovimientoDerivado(bet);
+
 /* ======================= App ======================= */
 export default function App() {
   const width = useWindowWidth();
-  const forceCompact = width < 900; // móvil y tablets pequeñas: siempre compacto
+  const forceCompact = width < 900;
   const [userCompact, setUserCompact] = useState(width < 1200);
   const isCompact = forceCompact || userCompact;
   const styles = useMemo(() => getStyles(isCompact), [isCompact]);
 
-  // Mostrar filtros: abierto en escritorio, plegado en móvil/tablet
   const [showFilters, setShowFilters] = useState(width >= 900);
   useEffect(() => setShowFilters(width >= 900), [width]);
 
-  // Ocultación de columnas en pantallas pequeñas (más agresivo)
   const isTablet = width < 1200;
   const isMobile = width < 800;
   const showCol = {
     canal: !isMobile,
     cuotaOf: !isMobile,
     cuotasInd: !isMobile,
-    cuotas: false, // oculto siempre en móvil/tablet
-    valores: !isTablet, // ocultar en tablet/móvil
-    observ: !isTablet, // ocultar en tablet/móvil
-    inversor: !isMobile, // ocultar en móvil
-    deporte: !isMobile, // ocultar en móvil
-    ganado: !isMobile, // ocultar en móvil
+    cuotas: false,
+    valores: !isTablet,
+    observ: !isTablet,
+    inversor: !isMobile,
+    deporte: !isMobile,
+    ganado: !isMobile,
   };
 
-  /* ------------ estado y datos (idéntico + 'aplicado') ------------ */
   const defaultNewBet = () => ({
     fecha: new Date().toISOString().slice(0, 10),
     canal: "",
@@ -402,6 +446,7 @@ export default function App() {
     cuotaOfMax: "",
     cuotasInd: "",
     aplicado: "",
+    movimiento: "",
   });
   const [sort, setSort] = useState({ field: "fecha", dir: "desc" });
 
@@ -485,6 +530,24 @@ export default function App() {
     );
     setNewBet((prev) => ({ ...prev, [type]: value }));
   };
+
+  /* KPIs */
+  const kpis = useMemo(() => {
+    const entries = Object.entries(saldosCarteras || {});
+    const bancoEntry = entries.find(([k]) => isBanco(k));
+    const bancoCents = bancoEntry ? bancoEntry[1] : 0;
+
+    const totalCasasCents = entries
+      .filter(([k]) => !isBanco(k))
+      .reduce((acc, [, v]) => acc + (v || 0), 0);
+
+    return {
+      bancoCents,
+      gastoBancoAbsEUR: Math.abs(bancoCents) / 100,
+      totalCasasEUR: totalCasasCents / 100,
+      netoGlobalEUR: (bancoCents + totalCasasCents) / 100,
+    };
+  }, [saldosCarteras]);
 
   const {
     totalMaxToInvest,
@@ -577,6 +640,237 @@ export default function App() {
     setNewBet(defaultNewBet());
   };
 
+  /* ======================= Helpers de prompts seguros ======================= */
+  const promptTextRequired = (label, defVal = "") => {
+    const v = window.prompt(label, defVal);
+    if (v === null) return null; // cancelar
+    const t = String(v).trim();
+    return t.length ? t : null;
+  };
+  const promptAmountRequiredCents = (label, defVal = "") => {
+    const v = window.prompt(label, defVal);
+    if (v === null) return null; // cancelar
+    const cents = toCents(v);
+    if (cents <= 0) return null;
+    return cents;
+  };
+  const promptPickRequired = (title, options) => {
+    if (!options?.length) return null;
+    const menu = options.map((n, i) => `${i + 1}) ${n}`).join("\n");
+    const raw = window.prompt(`${title}\n${menu}`, "1");
+    if (raw === null) return null;
+    const idx = parseInt(raw, 10);
+    if (!idx || idx < 1 || idx > options.length) return null;
+    return options[idx - 1];
+  };
+
+  /* ======================= ACCIONES RÁPIDAS ======================= */
+
+  const quickGastoAction = async (bancoName) => {
+    const inversores = Object.keys(saldosInversores);
+    if (inversores.length === 0) {
+      alert("Primero crea al menos un inversor.");
+      return;
+    }
+
+    const cents = promptAmountRequiredCents("Importe del gasto (€):", "20");
+    if (cents === null) return;
+
+    const tipo = promptTextRequired(
+      'Tipo (campo "Tipo"):',
+      "Gasto (curso/comisión)"
+    );
+    if (tipo === null) return;
+
+    const inversor =
+      inversores.length === 1
+        ? inversores[0]
+        : promptPickRequired("Selecciona inversor:", inversores);
+    if (inversor === null) return;
+
+    const canal = promptTextRequired("Canal (texto libre):", "Gasto");
+    if (canal === null) return;
+
+    const ok = window.confirm(
+      `Confirmar GASTO\n\n` +
+        `Cartera: ${bancoName}\nInversor: ${inversor}\n` +
+        `Tipo: ${tipo}\nCanal: ${canal}\nImporte: ${(cents / 100).toFixed(2)} €`
+    );
+    if (!ok) return;
+
+    const ahora = Timestamp.fromDate(new Date());
+    const payload = {
+      fecha: ahora,
+      canal,
+      tipoInversion: tipo,
+      cartera: bancoName,
+      inversor,
+      estado: "I",
+      inversionCents: cents,
+      inversion: cents / 100,
+      totalGanadoPerdidoCents: 0,
+      totalGanadoPerdido: 0,
+      totalBeneficioPerdidaCents: -cents,
+      totalBeneficioPerdida: -cents / 100,
+      aplicado: true,
+      tipoMovimiento: "GASTO",
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      const batch = writeBatch(db);
+      const ref = doc(collection(db, "bets"));
+      batch.set(ref, payload);
+
+      batch.set(
+        doc(db, "saldosCarteras", bancoName),
+        { balanceCents: increment(-cents), balance: increment(-cents / 100) },
+        { merge: true }
+      );
+      batch.set(
+        doc(db, "saldosInversores", inversor),
+        { balanceCents: increment(-cents), balance: increment(-cents / 100) },
+        { merge: true }
+      );
+
+      await batch.commit();
+      alert("Gasto registrado.");
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo registrar el gasto.");
+    }
+  };
+
+  const quickRecargaAction = async (bancoName) => {
+    const casas = Object.keys(saldosCarteras).filter((c) => !isBanco(c));
+    if (casas.length === 0) return alert("No hay casas configuradas.");
+
+    const inversores = Object.keys(saldosInversores);
+    if (inversores.length === 0)
+      return alert("Primero crea al menos un inversor.");
+
+    const cents = promptAmountRequiredCents("Importe a recargar (€):", "15");
+    if (cents === null) return;
+
+    const casa =
+      casas.length === 1
+        ? casas[0]
+        : promptPickRequired("Selecciona casa:", casas);
+    if (casa === null) return;
+
+    const inversor =
+      inversores.length === 1
+        ? inversores[0]
+        : promptPickRequired("Selecciona inversor:", inversores);
+    if (inversor === null) return;
+
+    const tipoBanco = promptTextRequired(
+      'Tipo (BANCO → campo "Tipo")',
+      "Recarga saldo para apuesta"
+    );
+    if (tipoBanco === null) return;
+
+    const tipoCasa = promptTextRequired(
+      'Tipo (CASA → campo "Tipo")',
+      "Saldo positivo ingresado"
+    );
+    if (tipoCasa === null) return;
+
+    const canal = promptTextRequired("Canal (texto libre):", "Recarga");
+    if (canal === null) return;
+
+    const ok = window.confirm(
+      `Confirmar RECARGA\n\n` +
+        `De: ${bancoName}  →  A: ${casa}\nInversor: ${inversor}\n` +
+        `Tipo BANCO: ${tipoBanco}\nTipo CASA: ${tipoCasa}\nCanal: ${canal}\n` +
+        `Importe: ${(cents / 100).toFixed(2)} €`
+    );
+    if (!ok) return;
+
+    const ahora = Timestamp.fromDate(new Date());
+
+    const bancoBet = {
+      fecha: ahora,
+      canal,
+      tipoInversion: tipoBanco,
+      cartera: bancoName,
+      inversor,
+      estado: "I",
+      inversionCents: cents,
+      inversion: cents / 100,
+      totalGanadoPerdidoCents: 0,
+      totalGanadoPerdido: 0,
+      totalBeneficioPerdidaCents: -cents,
+      totalBeneficioPerdida: -cents / 100,
+      aplicado: true,
+      tipoMovimiento: "GASTO",
+      observacion: `Recarga a ${casa}`,
+      createdAt: serverTimestamp(),
+    };
+
+    const casaBet = {
+      fecha: ahora,
+      canal,
+      tipoInversion: tipoCasa,
+      cartera: casa,
+      inversor,
+      estado: "I",
+      inversionCents: cents,
+      inversion: cents / 100,
+      totalGanadoPerdidoCents: 0,
+      totalGanadoPerdido: 0,
+      totalBeneficioPerdidaCents: -cents,
+      totalBeneficioPerdida: -cents / 100,
+      aplicado: false,
+      tipoMovimiento: "RECARGA",
+      observacion: `Desde ${bancoName}`,
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      const batch = writeBatch(db);
+
+      const ref1 = doc(collection(db, "bets"));
+      const ref2 = doc(collection(db, "bets"));
+      batch.set(ref1, bancoBet);
+      batch.set(ref2, casaBet);
+
+      batch.set(
+        doc(db, "saldosCarteras", bancoName),
+        { balanceCents: increment(-cents), balance: increment(-cents / 100) },
+        { merge: true }
+      );
+      batch.set(
+        doc(db, "saldosCarteras", casa),
+        { balanceCents: increment(+cents), balance: increment(+cents / 100) },
+        { merge: true }
+      );
+
+      batch.set(
+        doc(db, "saldosInversores", inversor),
+        { balanceCents: increment(-cents), balance: increment(-cents / 100) },
+        { merge: true }
+      );
+      batch.set(
+        doc(db, "saldosInversores", inversor),
+        { balanceCents: increment(+cents), balance: increment(+cents / 100) },
+        { merge: true }
+      );
+
+      await batch.commit();
+      alert(
+        `Recarga realizada: ${(cents / 100).toFixed(
+          2
+        )} € de ${bancoName} a ${casa}.`
+      );
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo registrar la recarga.");
+    }
+  };
+
+  /* ======================= Submit/CRUD normal ======================= */
+
   const handleSubmitBet = async (e) => {
     e.preventDefault();
     if (!requiredOk) return alert("Completa los campos obligatorios.");
@@ -608,6 +902,12 @@ export default function App() {
         .filter((n) => Number.isFinite(n));
     }
 
+    const tipoMovimiento = movimientoOf({
+      estado: newBet.estado,
+      cartera: newBet.cartera,
+      aplicado: true,
+    });
+
     const payload = {
       fecha: toTimestampFromDateInput(newBet.fecha),
       canal: newBet.canal,
@@ -622,6 +922,7 @@ export default function App() {
       totalGanadoPerdido: ganadoCents / 100,
       totalBeneficioPerdida: beneficioBaseCents / 100,
       aplicado: true,
+      tipoMovimiento,
       ...(newBet.cuotasIndependientes !== undefined && {
         cuotasIndependientes: !!newBet.cuotasIndependientes,
       }),
@@ -813,7 +1114,10 @@ export default function App() {
       const batch = writeBatch(db);
       batch.set(
         doc(db, "bets", bet.id),
-        { aplicado: newApplied },
+        {
+          aplicado: newApplied,
+          tipoMovimiento: movimientoOf({ ...bet, aplicado: newApplied }),
+        },
         { merge: true }
       );
 
@@ -984,6 +1288,11 @@ export default function App() {
       if (f.aplicado === "si" && !applied) return false;
       if (f.aplicado === "no" && applied) return false;
 
+      if (f.movimiento) {
+        const mov = movimientoOf(b);
+        if (mov !== f.movimiento) return false;
+      }
+
       const d = b.fecha && b.fecha.toDate ? b.fecha.toDate() : null;
       if (f.fechaDesde) {
         const from = new Date(`${f.fechaDesde}T00:00:00`);
@@ -1079,7 +1388,7 @@ export default function App() {
         <p style={styles.p}>Prototipo con Firestore</p>
       </header>
 
-      {/* ====== Toggle modo compacto ====== */}
+      {/* Toggle modo compacto */}
       <div
         style={{
           display: "flex",
@@ -1097,40 +1406,122 @@ export default function App() {
         </button>
       </div>
 
-      {/* === SALDOS + CALCULADORA === */}
+      {/* SALDOS + CALCULADORA */}
       <div style={styles.topLayout}>
         {/* SALDOS */}
         <div style={styles.card}>
           <h2 style={styles.cardTitle}>Saldos Actuales</h2>
 
+          {/* KPIs */}
+          <div style={styles.kpiBar}>
+            <div
+              style={styles.kpiCard}
+              title="Suma de todas las casas de apuestas (excluye BANCO)"
+            >
+              <div style={{ opacity: 0.8, fontSize: ".85rem" }}>
+                Disponible en casas
+              </div>
+              <div style={{ fontWeight: "bold", fontSize: "1.1rem" }}>
+                {kpis.totalCasasEUR.toFixed(2)} €
+              </div>
+            </div>
+            <div
+              style={styles.kpiCard}
+              title="Gasto acumulado pagado con tarjeta (cursos/recargas)"
+            >
+              <div style={{ opacity: 0.8, fontSize: ".85rem" }}>
+                Gasto BANCO
+              </div>
+              <div style={{ fontWeight: "bold", fontSize: "1.1rem" }}>
+                {kpis.gastoBancoAbsEUR.toFixed(2)} €
+              </div>
+            </div>
+            <div
+              style={styles.kpiCard}
+              title="Suma de todo: casas + BANCO (negativo)"
+            >
+              <div style={{ opacity: 0.8, fontSize: ".85rem" }}>
+                Neto global
+              </div>
+              <div
+                style={{
+                  fontWeight: "bold",
+                  fontSize: "1.1rem",
+                  color: kpis.netoGlobalEUR >= 0 ? "#10b981" : "#ef4444",
+                }}
+              >
+                {kpis.netoGlobalEUR.toFixed(2)} €
+              </div>
+            </div>
+          </div>
+
           <h3 style={styles.subTitle}>Carteras</h3>
           <div style={styles.balanceContainer}>
-            {Object.entries(saldosCarteras).map(([name, cents]) => (
-              <div style={styles.balanceBox} key={`c-${name}`}>
-                <span style={styles.balanceLabel}>{name}</span>
-                <span style={styles.balanceAmount}>{centsToEUR(cents)} €</span>
-                <div style={styles.actionBtns}>
-                  <button
-                    style={styles.actionBtn}
-                    onClick={() => editSaldo("saldosCarteras", name, cents)}
-                  >
-                    Editar saldo
-                  </button>
-                  <button
-                    style={styles.actionBtn}
-                    onClick={() => recomputeSaldo("saldosCarteras", name)}
-                  >
-                    Recalcular
-                  </button>
-                  <button
-                    style={{ ...styles.actionBtn, ...styles.actionDanger }}
-                    onClick={() => deleteSaldo("saldosCarteras", name)}
-                  >
-                    Eliminar
-                  </button>
+            {Object.entries(saldosCarteras).map(([name, cents]) => {
+              const esBanco = isBanco(name);
+              return (
+                <div style={styles.balanceBox} key={`c-${name}`}>
+                  <span style={styles.balanceLabel}>{name}</span>
+                  <span style={styles.balanceAmount}>
+                    {centsToEUR(cents)} €
+                  </span>
+
+                  {/* Acciones estándar */}
+                  <div style={styles.actionBtns}>
+                    <button
+                      style={styles.actionBtn}
+                      onClick={() => editSaldo("saldosCarteras", name, cents)}
+                    >
+                      Editar saldo
+                    </button>
+                    <button
+                      style={styles.actionBtn}
+                      onClick={() => recomputeSaldo("saldosCarteras", name)}
+                    >
+                      Recalcular
+                    </button>
+                    <button
+                      style={{
+                        ...styles.actionBtn,
+                        ...styles.actionDanger,
+                        ...(esBanco
+                          ? { opacity: 0.5, cursor: "not-allowed" }
+                          : null),
+                      }}
+                      onClick={() =>
+                        !esBanco && deleteSaldo("saldosCarteras", name)
+                      }
+                      disabled={esBanco}
+                      title={
+                        esBanco ? "No se puede eliminar BANCO" : "Eliminar"
+                      }
+                    >
+                      Eliminar
+                    </button>
+                  </div>
+
+                  {/* === Acciones rápidas solo para BANCO === */}
+                  {esBanco && (
+                    <div style={{ ...styles.actionBtns, marginTop: 6 }}>
+                      <button
+                        style={styles.actionBtn}
+                        onClick={() => quickGastoAction(name)}
+                        title="Registrar gasto rápido (curso/comisión)"
+                      >
+                        Gasto (curso)
+                      </button>
+                      <button
+                        style={styles.actionBtn}
+                        onClick={() => quickRecargaAction(name)}
+                        title="Recargar saldo a una casa (BANCO → CASA)"
+                      >
+                        Recargar a casa
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <h3 style={{ ...styles.subTitle, marginTop: 12 }}>Inversores</h3>
@@ -1286,7 +1677,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* === REGISTRO/EDICIÓN === */}
+      {/* REGISTRO/EDICIÓN */}
       <div style={styles.mainLayout}>
         <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
           <h2 style={styles.cardTitle}>
@@ -1301,7 +1692,7 @@ export default function App() {
                 flexGrow: 1,
                 overflowY: "auto",
                 paddingRight: "10px",
-                maxHeight: "70vh", // ✅ más alto y responsivo
+                maxHeight: "70vh",
                 display: "grid",
                 gridTemplateColumns: `repeat(auto-fit, minmax(${
                   isCompact ? 220 : 240
@@ -1571,11 +1962,10 @@ export default function App() {
           </form>
         </div>
 
-        {/* === HISTORIAL + FILTROS RESPONSIVOS === */}
+        {/* HISTORIAL + FILTROS */}
         <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
           <h2 style={styles.cardTitle}>Historial de Apuestas</h2>
 
-          {/* Cabecera de filtros compacta */}
           <div style={styles.filterHeaderRow}>
             <input
               style={styles.input}
@@ -1622,7 +2012,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* Filtros completos (plegables) */}
           {showFilters && (
             <div style={styles.filterBar}>
               <select
@@ -1750,6 +2139,20 @@ export default function App() {
                 <option value="no">No</option>
               </select>
 
+              <select
+                style={styles.select}
+                value={filters.movimiento}
+                onChange={(e) =>
+                  setFilters((p) => ({ ...p, movimiento: e.target.value }))
+                }
+              >
+                <option value="">Movimiento (todos)</option>
+                <option value="APUESTA">Apuesta</option>
+                <option value="GASTO">Gasto</option>
+                <option value="RECARGA">Recarga</option>
+                <option value="AJUSTE">Ajuste</option>
+              </select>
+
               <input
                 style={styles.input}
                 type="number"
@@ -1851,6 +2254,7 @@ export default function App() {
                     cuotaOfMax: "",
                     cuotasInd: "",
                     aplicado: "",
+                    movimiento: "",
                   })
                 }
               >
@@ -1904,11 +2308,36 @@ export default function App() {
                     ? bet.cuotasValoresNums.join(", ")
                     : bet.cuotasValores || "";
 
+                  const mov = movimientoOf(bet);
+                  const color =
+                    mov === "APUESTA"
+                      ? "#10b981"
+                      : mov === "GASTO"
+                      ? "#ef4444"
+                      : mov === "RECARGA"
+                      ? "#3b82f6"
+                      : mov === "AJUSTE"
+                      ? "#f59e0b"
+                      : "#6b7280";
+
+                  const disableToggle = mov === "RECARGA";
+
                   return (
                     <tr key={bet.id}>
                       <td style={styles.td}>{fmtFecha(bet.fecha)}</td>
                       {showCol.canal && <td style={styles.td}>{bet.canal}</td>}
-                      <td style={styles.td}>{bet.tipoInversion}</td>
+                      <td style={styles.td}>
+                        {bet.tipoInversion}
+                        <span
+                          style={{
+                            ...styles.badgeMovimiento,
+                            borderColor: color,
+                            color,
+                          }}
+                        >
+                          {mov}
+                        </span>
+                      </td>
                       <td style={styles.td}>{centsToEUR(inv)} €</td>
                       {showCol.cuotaOf && (
                         <td style={styles.td}>
@@ -1982,7 +2411,12 @@ export default function App() {
                           type="checkbox"
                           checked={applied}
                           onChange={() => toggleAplicado(bet)}
-                          title="Aplicar impacto normal (marcado) o invertir (desmarcado)"
+                          disabled={disableToggle}
+                          title={
+                            disableToggle
+                              ? "RECARGA (apunte espejo); no modificar 'Aplicado?'"
+                              : "Aplicar impacto normal (marcado) o invertir (desmarcado)"
+                          }
                         />
                       </td>
                       <td style={styles.td}>
